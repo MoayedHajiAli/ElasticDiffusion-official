@@ -112,15 +112,17 @@ class ElasticDiffusion(nn.Module):
                  verbose=False,
                  log_freq=5,
                  view_batch_size=1,
-                 torch_dtype=torch.float32):
+                 low_vram=False):
         super().__init__()
 
         self.device = device
         self.sd_version = sd_version
         self.verbose = verbose
-        self.torch_dtype = torch_dtype
+        self.torch_dtype = torch.float16 if low_vram else torch.float32
         self.view_batch_size = view_batch_size
         self.log_freq = log_freq
+        self.low_vram = low_vram
+        
 
         print(f'[INFO] loading stable diffusion...')
         if self.sd_version == '2.1':
@@ -139,32 +141,26 @@ class ElasticDiffusion(nn.Module):
             model_key = self.sd_version
 
         # Create model
-        self.vae = AutoencoderKL.from_pretrained(model_key, subfolder="vae", torch_dtype=torch_dtype).to(self.device)
-        self.tokenizer = [CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer", torch_dtype=torch_dtype)]
-        self.text_encoder = [CLIPTextModel.from_pretrained(model_key, subfolder="text_encoder", torch_dtype=torch_dtype).to(self.device)]
-        self.unet = UNet2DConditionModel.from_pretrained(model_key, subfolder="unet", torch_dtype=torch_dtype).to(self.device)
+        self.vae = AutoencoderKL.from_pretrained(model_key, subfolder="vae", torch_dtype=self.torch_dtype).to('cpu' if self.low_vram else self.device)
+        self.tokenizer = [CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer", torch_dtype=self.torch_dtype)]
+        self.text_encoder = [CLIPTextModel.from_pretrained(model_key, subfolder="text_encoder", torch_dtype=self.torch_dtype).to('cpu' if self.low_vram else self.device)]
+        self.unet = UNet2DConditionModel.from_pretrained(model_key, subfolder="unet", torch_dtype=self.torch_dtype).to('cpu' if self.low_vram else self.device)
 
         if self.sd_version == 'XL1.0':
-            self.text_encoder.append(CLIPTextModelWithProjection.from_pretrained(model_key, subfolder="text_encoder_2", torch_dtype=torch_dtype).to(self.device))
-            self.tokenizer.append(CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer_2", torch_dtype=torch_dtype))
+            self.text_encoder.append(CLIPTextModelWithProjection.from_pretrained(model_key, subfolder="text_encoder_2", torch_dtype=self.torch_dtype).to('cpu' if self.low_vram else self.device))
+            self.tokenizer.append(CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer_2", torch_dtype=self.torch_dtype))
 
         self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
         self.requires_grad(self.vae, False)
         self.set_view_config()
-
+        self.vae_scale_factor =  2 ** (len(self.vae.config.block_out_channels) - 1)
         print(f'[INFO] loaded stable diffusion!')
     
-    def set_view_config(self, stride=None):
-        if self.sd_version == 'XL1.0':
-            self.view_config = {
-            "window_size": stride if stride is not None else 64,
-            "stride": stride if stride is not None else 64}
-            self.view_config["context_size"] = 128 - self.view_config["window_size"]
-        else:
-            self.view_config = {
-            "window_size": stride if stride is not None else 32,
-            "stride": stride if stride is not None else 32}
-            self.view_config["context_size"] = 64 - self.view_config["window_size"]
+    def set_view_config(self, patch_size=None):
+        self.view_config = {
+            "window_size": patch_size if patch_size is not None else self.unet.config.sample_size // 2,
+            "stride": patch_size if patch_size is not None else self.unet.config.sample_size // 2}
+        self.view_config["context_size"] = self.unet.config.sample_size - self.view_config["window_size"]
 
     def seed_everything(self, seed, seed_np=True):
         torch.manual_seed(seed)
@@ -201,11 +197,11 @@ class ElasticDiffusion(nn.Module):
     @torch.no_grad()
     def get_views(self, panorama_height, panorama_width, h_ws=64, w_ws=64, stride=32, **kwargs):
         
-        if int(panorama_height / 8) != panorama_height/ 8 or int(panorama_width / 8) != panorama_width / 8:
-            raise f"height {panorama_height} and Width {panorama_width} must be divisable by 8"
+        if int(panorama_height / self.vae_scale_factor) != panorama_height/ self.vae_scale_factor or int(panorama_width / self.vae_scale_factor) != panorama_width / self.vae_scale_factor:
+            raise f"height {panorama_height} and Width {panorama_width} must be divisable by {self.vae_scale_factor}"
 
-        panorama_height //= 8 # go to LDM latent size
-        panorama_width //= 8
+        panorama_height //= self.vae_scale_factor # go to LDM latent size
+        panorama_width //= self.vae_scale_factor
 
         num_blocks_height = math.ceil((panorama_height - h_ws) / stride) + 1 if stride else 1
         num_blocks_width = math.ceil((panorama_width - w_ws) / stride) + 1 if stride else 1
@@ -275,6 +271,45 @@ class ElasticDiffusion(nn.Module):
         imgs = (imgs / 2 + 0.5).clamp(0, 1)
         return imgs
 
+    ## Adapted from https://github.com/PRIS-CV/DemoFusion/blob/540b5e26f5e238589bee60aa2124ae8c37d00777/pipeline_demofusion_sdxl.py#L603
+    def tiled_decode(self, latents):
+        current_height, current_width = latents.shape[2] * self.vae_scale_factor, latents.shape[3] * self.vae_scale_factor
+        sample_size = self.unet.config.sample_size
+        core_size = self.unet.config.sample_size // 4
+        core_stride = core_size
+        pad_size = self.unet.config.sample_size // self.vae_scale_factor * 3
+        decoder_view_batch_size = 1
+        
+        if self.low_vram:
+            core_stride = core_size // 2
+            pad_size = core_size
+
+        views = self.get_views(current_height, current_width, h_ws=core_size, w_ws=core_size, stride=core_stride)
+        views_batch = [views[i : i + decoder_view_batch_size] for i in range(0, len(views), decoder_view_batch_size)]
+        latents_ = F.pad(latents, (pad_size, pad_size, pad_size, pad_size), 'constant', 0)
+        image = torch.zeros(latents.size(0), 3, current_height, current_width).to(latents.device)
+        count = torch.zeros_like(image).to(latents.device)
+        # get the latents corresponding to the current view coordinates
+        for j, batch_view in enumerate(views_batch):
+            vb_size = len(batch_view)
+            latents_for_view = torch.cat(
+                [
+                    latents_[:, :, h_start:h_end+pad_size*2, w_start:w_end+pad_size*2]
+                    for h_start, h_end, w_start, w_end in batch_view
+                ]
+            ).to(self.vae.device)
+            # image_patch = self.vae.decode(latents_for_view / self.vae.config.scaling_factor, return_dict=False)[0]
+            image_patch = self.decode_latents(latents_for_view)
+            h_start, h_end, w_start, w_end = views[j]
+            h_start, h_end, w_start, w_end = h_start * self.vae_scale_factor, h_end * self.vae_scale_factor, w_start * self.vae_scale_factor, w_end * self.vae_scale_factor
+            p_h_start, p_h_end, p_w_start, p_w_end = pad_size * self.vae_scale_factor, image_patch.size(2) - pad_size * self.vae_scale_factor, pad_size * self.vae_scale_factor, image_patch.size(3) - pad_size * self.vae_scale_factor
+            image[:, :, h_start:h_end, w_start:w_end] += image_patch[:, :, p_h_start:p_h_end, p_w_start:p_w_end].to(latents.device)
+            count[:, :, h_start:h_end, w_start:w_end] += 1
+        image = image / count
+        # image = (image / 2 + 0.5).clamp(0, 1)
+        return image
+
+
     def compute_downsampling_size(self, image, scale_factor):
         B, C, H, W = image.shape
         
@@ -298,17 +333,33 @@ class ElasticDiffusion(nn.Module):
                 return torch.zeros(1, 4, H, W).to(self.device)            
 
             self.seed_everything(self.string_to_number(id), seed_np=False) # make sure same background and noise are sampled at each iteration 
-            random_bg = torch.rand(1, 3, device=self.device)[:, :, None, None].repeat(1, 1, H * 8, W * 8)
+            random_bg = torch.rand(1, 3, device=self.device)[:, :, None, None].repeat(1, 1, H * self.vae_scale_factor, W * self.vae_scale_factor)
+            
             needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
+
+            # TODO: precompute random backgrounds to enable efficeint low_vram option instead of constantly moving vae between cpu and gpu
+            if self.low_vram:
+                # needs_upcasting = False
+                # self.unet.cpu()
+                self.vae.to(self.device)
+            
             if needs_upcasting:
                 self.upcast_vae()
                 random_bg = random_bg.float()
+            
             random_bg_encoded = self.vae.encode(random_bg).latent_dist.sample() * self.vae.config.scaling_factor
             
+            # if self.low_vram:
+            #     self.vae.cpu()
+            #     self.unet.to(self.device)
+
             noise = [random_bg_encoded, torch.randn_like(random_bg_encoded)]
             timesteps = t.long()
             random_bg_encoded_t = self.scheduler.add_noise(noise[0], noise[1], timesteps)
             self.seed_everything(np.random.randint(100000), seed_np=False)
+
+            if needs_upcasting:
+                self.vae.to(dtype=torch.float16)
 
             return random_bg_encoded_t
         
@@ -709,6 +760,9 @@ class ElasticDiffusion(nn.Module):
     @torch.no_grad()
     def generate(self, latent, text_embeds, add_text_embeds, guidance_scale=7.5):
         intermediate_steps_x0 = []
+        if self.low_vram:
+            self.vae.cpu()
+            self.unet.to(self.device)
         with torch.autocast('cuda', enabled=(self.device.type=='cuda')):
             for i, t in enumerate(tqdm(self.scheduler.timesteps)):
                 global_latent_model_input = torch.cat([latent] * 2)
@@ -725,7 +779,21 @@ class ElasticDiffusion(nn.Module):
                 if i % self.log_freq == 0:
                     intermediate_steps_x0.append(ddim_out['pred_original_sample'].cpu())
 
-        return T.ToPILImage()(self.decode_latents(latent).cpu()[0]), {"inter_x0":intermediate_steps_x0}
+        #upcast vae 
+        needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
+        if self.low_vram:
+            # needs_upcasting = False
+            self.unet.cpu()
+            self.vae.to(self.device)
+        
+        if needs_upcasting:
+            self.upcast_vae()
+
+        image = T.ToPILImage()(self.decode_latents(latent).cpu()[0]), {"inter_x0":intermediate_steps_x0}
+        if needs_upcasting:
+            self.vae.to(dtype=torch.float16)
+
+        return image
     
 
     ## Copied from https://github.com/huggingface/diffusers/blob/cf03f5b7188c603ff037d686f7256d0571fbd651/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py#L66
@@ -746,7 +814,7 @@ class ElasticDiffusion(nn.Module):
     def compute_local_uncond_signal(self, latent, t, 
                                     uncond_text_embeds, negative_pooled_prompt_embeds,
                                     view_config):
-        height, width = latent.shape[-2] * 8, latent.shape[-1] * 8
+        height, width = latent.shape[-2] * self.vae_scale_factor, latent.shape[-1] * self.vae_scale_factor
     
         # edge case where context pixel are not required in one dimension
         h_ws = w_ws = view_config['window_size']
@@ -879,7 +947,7 @@ class ElasticDiffusion(nn.Module):
             factor = max(H, W) / 512
         
         factor = max(factor, 1)
-        return (int((H // factor) // 8), int((W // factor) // 8))
+        return (int((H // factor) // self.vae_scale_factor), int((W // factor) // self.vae_scale_factor))
     
     @torch.no_grad()
     def generate_image(self, prompts, negative_prompts='', 
@@ -893,6 +961,7 @@ class ElasticDiffusion(nn.Module):
                        cosine_scale=3.0,
                        repaint_sampling=True,
                        progress=tqdm,
+                       tiled_decoder=False,
                        grid=False):
         
         self.random_downasmple_pre = {}
@@ -915,19 +984,30 @@ class ElasticDiffusion(nn.Module):
         if isinstance(negative_prompts, str):
             negative_prompts = [negative_prompts] * len(prompts)
 
+        if self.low_vram:
+            self.vae.cpu()
+            self.unet.cpu()
+            self.text_encoder = [encoder.to(self.device) for encoder in self.text_encoder]
+
         uncond_text_embeds, negative_pooled_prompt_embeds = self.get_text_embeds(negative_prompts)
         cond_text_embeds, pooled_prompt_embeds= self.get_text_embeds(prompts)
 
-        text_embeds = torch.cat([uncond_text_embeds, cond_text_embeds])  # [2, 77, 768]
+
+        text_embeds = torch.cat([uncond_text_embeds, cond_text_embeds]) 
         add_text_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
-        global_latent = torch.randn((len(prompts), self.unet.config.in_channels, height // 8, width // 8),
+        global_latent = torch.randn((len(prompts), self.unet.config.in_channels, height // self.vae_scale_factor, width // self.vae_scale_factor),
                                      device=self.device,
-                                     dtype=self.torch_dtype) # we divide by 8 to get the latent dimension of stabel diffusion
+                                     dtype=self.torch_dtype) 
         self.scheduler.set_timesteps(num_inference_steps)
         
         init_downsampled_latent = None
         intermediate_x0_imgs = []
         intermediate_cascade_x0_imgs_lst = {}
+
+        if self.low_vram:
+            self.text_encoder = [encoder.cpu() for encoder in self.text_encoder]
+            self.vae.cpu()
+            self.unet.to(self.device)
 
         with torch.autocast('cuda', enabled=(self.device.type=='cuda')):
             for i, t in enumerate(progress(self.scheduler.timesteps)):
@@ -999,16 +1079,22 @@ class ElasticDiffusion(nn.Module):
         
         #upcast vae 
         needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
+        if self.low_vram:
+            # needs_upcasting = False  
+            self.unet.cpu()
+            self.vae.to(self.device)
+        
         if needs_upcasting:
             self.upcast_vae()
         
         decode_bs = 1
+        decode_fn = self.tiled_decode if tiled_decoder else self.decode_latents
         image_log = {}
         if self.verbose:
             if init_downsampled_latent is not None:
                 image_log['global_img'], generation_info  = self.generate(init_downsampled_latent, text_embeds, add_text_embeds, guidance_scale=guidance_scale)
                 if 'inter_x0' in generation_info:
-                    inter_x0_decoded = torch.cat([self.decode_latents(torch.cat(generation_info['inter_x0'][i:i+decode_bs]).to(self.device)) \
+                    inter_x0_decoded = torch.cat([decode_fn(torch.cat(generation_info['inter_x0'][i:i+decode_bs]).to(self.device)) \
                                             for i in range(0, len(generation_info['inter_x0']), decode_bs)])
                     image_log['global_img_inter_x0_imgs'] = T.ToPILImage()(make_grid(inter_x0_decoded,
                                                                         nrows=len(generation_info['inter_x0']),
@@ -1016,7 +1102,7 @@ class ElasticDiffusion(nn.Module):
             
 
             if intermediate_x0_imgs:
-                inter_x0_decoded = torch.cat([self.decode_latents(torch.cat(intermediate_x0_imgs[i:i+decode_bs]).to(self.device)) \
+                inter_x0_decoded = torch.cat([decode_fn(torch.cat(intermediate_x0_imgs[i:i+decode_bs]).to(self.device)) \
                                             for i in range(0, len(intermediate_x0_imgs), decode_bs)])
                 inter_x0_decoded = torch.clip(inter_x0_decoded, 0, 1)
                 image_log['intermediate_x0_imgs'] = T.ToPILImage()(make_grid(inter_x0_decoded,
@@ -1025,18 +1111,21 @@ class ElasticDiffusion(nn.Module):
 
             image_log['intermediate_cascade_x0_imgs'] = {}
             for factor, intermediate_cascade_x0_imgs in intermediate_cascade_x0_imgs_lst.items():
-                inter_cascade_x0_decoded = torch.cat([self.decode_latents(torch.cat(intermediate_cascade_x0_imgs[i:i+decode_bs]).to(self.device)) \
+                inter_cascade_x0_decoded = torch.cat([decode_fn(torch.cat(intermediate_cascade_x0_imgs[i:i+decode_bs]).to(self.device)) \
                                             for i in range(0, len(intermediate_cascade_x0_imgs), decode_bs)])
                 image_log['intermediate_cascade_x0_imgs'][factor] = T.ToPILImage()(make_grid(inter_cascade_x0_decoded,
                                                                         nrows=len(intermediate_cascade_x0_imgs),
                                                                         normalize=False).cpu())
         
         # Img latents -> imgs
-        imgs = torch.cat([self.decode_latents(global_latent[i:i+decode_bs]) for i in range(0, len(global_latent), decode_bs)])
+        imgs = torch.cat([decode_fn(global_latent[i:i+decode_bs]) for i in range(0, len(global_latent), decode_bs)])
 
         if grid:
             imgs = [make_grid(imgs, nrows=len(imgs), normalize=False)]
         imgs = [T.ToPILImage()(img.cpu()) for img in imgs] 
+
+        if needs_upcasting:
+            self.vae.to(dtype=torch.float16)
 
         return imgs, image_log
 
@@ -1044,30 +1133,31 @@ class ElasticDiffusion(nn.Module):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prompt', type=str, default="Envision a portrait of a horse, framed by a blue headscarf with muted tones of rust and cream. she has brown-colored eyes. Her attire, simple yet dignified")
+    parser.add_argument('--prompt', type=str, default="A realistic portrait of a young black woman. she has a Christmas red hat and a red scarf. Her eyes are light brown like they're almost caramel color. Her attire, simple yet dignified.")
     parser.add_argument('--negative', type=str, default='blurry, ugly, duplicate, no details, deformed')
     parser.add_argument('--sd_version', type=str, default='XL1.0', choices=['1.4', '1.5', '2.0', '2.1', 'XL1.0'],
                         help="stable diffusion version stable diffusion version ['1.4', '1.5', '2.0', '2.1', or 'XL1.0'] or a model key for a huggingface stable diffusion version")
-    parser.add_argument('--H', type=int, default=1920)
-    parser.add_argument('--W', type=int, default=1080)
-    parser.add_argument('--low_memory', type=bool, default=False, help="run with half percision on low memeory mode")
+    parser.add_argument('--H', type=int, default=2048)
+    parser.add_argument('--W', type=int, default=2048)
+    parser.add_argument('--low_vram', type=bool, default=True, help="run with half percision on low memeory mode")
     parser.add_argument('--seed', type=int, default=0) 
     parser.add_argument('--steps', type=int, default=50)
     parser.add_argument('--num_sampled', type=int, default=1)
     parser.add_argument('--guidance_scale', type=float, default=10.0)
     parser.add_argument('--cosine_scale', type=float, default=10.0, help='effective only with CosineScheduler')
-    parser.add_argument('--rrg_scale', type=float, default=1000)
-    parser.add_argument('--resampling_steps', type=int, default=7)
+    parser.add_argument('--rrg_scale', type=float, default=4000)
+    parser.add_argument('--resampling_steps', type=int, default=10)
     parser.add_argument('--new_p', type=float, default=0.3)
     parser.add_argument('--rrg_stop_t', type=float, default=0.2)
     parser.add_argument('--view_batch_size', type=int, default=16)
     parser.add_argument('--outdir', type=str, default='../release_results_log/')
     parser.add_argument('--make_grid', type=bool, default=False, help="make a grid of the output images")
     parser.add_argument('--repaint_sampling', type=bool, default=True, help="")
+    parser.add_argument('--tiled_decoder', type=bool, default=True, help="")
     parser.add_argument('--exp', type=str, default='ElasticDiffusion', help='experiment tag')
     parser.add_argument('--tag', type=str, default='', help='identifier experiment tag')
     parser.add_argument('--log_freq', type=int, default=5, help="log frequency of intermediate diffusion steps")
-    parser.add_argument('--verbose', type=bool, default=True)
+    parser.add_argument('--verbose', type=bool, default=False)
     opt = parser.parse_args()
     
     
@@ -1080,7 +1170,7 @@ if __name__ == '__main__':
                           verbose=opt.verbose,
                           log_freq=opt.log_freq,
                           view_batch_size=opt.view_batch_size,
-                          torch_dtype=torch.float16 if opt.low_memory else torch.float32) 
+                          low_vram = opt.low_vram) 
 
     sd.seed_everything(opt.seed)
 
@@ -1095,7 +1185,8 @@ if __name__ == '__main__':
                             cosine_scale = opt.cosine_scale,
                             rrg_init_weight = opt.rrg_scale,
                             rrg_stop_t = opt.rrg_stop_t,
-                            repaint_sampling=opt.repaint_sampling)
+                            repaint_sampling=opt.repaint_sampling,
+                            tiled_decoder=opt.tiled_decoder)
 
     if opt.verbose:
         timelog.print_results()
