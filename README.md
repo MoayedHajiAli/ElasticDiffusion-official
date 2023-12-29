@@ -81,6 +81,8 @@ images, verbose_info = pipe.generate_image(prompts=prompt,
   The initial scale of the reduced-resolution guidance. A higher value helps eliminate emerging artifacts but results in blurier images. We recommend using an RRG scale between 2000 and 4000.
 - `cosine_scale`:
   Specifies the decreasing rate of the reduced-resolution guidance scale. A higher value leads to a more rapid decrease. The combination of this hyper-parameter and `rrg_init_weight` is used to control the sharpness-artifacts tradeoff.
+- `patch_size`: 
+  specifies the size of each view when computing the local unconditional score. A larger value results in a faster inference but might affect the coherence of the generated image.
 - `low_vram`: 
   if enabled, the model will operate at half-precision and load only one component to the GPUs at a time to enable the generation at a lower GPU memory requirement. 
 - `tiled_decoder`: 
