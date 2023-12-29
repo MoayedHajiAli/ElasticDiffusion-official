@@ -20,7 +20,10 @@ def generate_image_fn(prompt:str,
                       cosine_scale:float=10.0,
                       view_batch_size:int=16,
                       num_inference_steps:int=50,
+                      patch_size:int=64,
                       seed:int=0,
+                      low_vram:bool=False,
+                      tiled_decoder:bool=False,
                       progress=gr.Progress()) -> list:
     
     global loaded_sd_version, pipe
@@ -31,8 +34,11 @@ def generate_image_fn(prompt:str,
     start_time = time.time()
     pipe.seed_everything(int(seed))
     pipe.view_batch_size = int(view_batch_size)
+    pipe.set_view_config(patch_size=patch_size)
 
-    print("params", prompt, negative_prompts, resampling_steps, resampling_keep_p, rrg_scale, guidance_scale, cosine_scale, view_batch_size, num_inference_steps)
+    if pipe.low_vram != low_vram:
+        pipe = ElasticDiffusion(device, loaded_sd_version, low_vram=True, verbose=False)
+
     images, log_info = pipe.generate_image(prompts=prompt, negative_prompts=negative_prompts,
                             height=img_height, width=img_width, 
                             num_inference_steps=num_inference_steps, 
@@ -43,6 +49,7 @@ def generate_image_fn(prompt:str,
                             rrg_stop_t=0.4,
                             repaint_sampling=True,
                             cosine_scale=float(cosine_scale),
+                            tiled_decoder=tiled_decoder,
                             progress=progress.tqdm)
     
     end_time = time.time()
@@ -82,12 +89,15 @@ gr.Interface(
         gr.Textbox(label="Cosine Scale", value=10.0, max_lines=1),
         gr.Slider(label="View Batch Size", value=16, minimum=1, maximum=64, step=1),
         gr.Slider(label="Number of Inference Steps", value=50, minimum=40, maximum=100, step=5),
+        gr.Slider(label="Patch Size", value=64, minimum=32, maximum=120, step=8),
         gr.Textbox(
             label="Seed",
             value=0,
             max_lines=1,
             placeholder="0",
-        )
+        ),
+        gr.Checkbox(label="Low VRAM", value=False),
+        gr.Checkbox(label="Tiled Decoder", value=False)
 
 
     ],
@@ -96,20 +106,20 @@ gr.Interface(
     description=description,
     article=article,
     examples=[
-        ["A realistic portrait of a young black woman. she has a Christmas red hat and a red scarf. Her eyes are light brown like they're almost caramel color. Her attire, simple yet dignified.", "blurry, ugly, poorly drawn, deformed", 2048, 2048, 10, 0.3, 1200, None, None, None, None, None, 0],
-        ["Envision a portrait of a horse, framed by a blue headscarf with muted tones of rust and cream. she has brown-colored eyes. Her attire, simple yet dignified", "blurry, ugly, poorly drawn, deformed", 1536, 1536, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["Envision a portrait of a cute corgi, framed by a red headscarf. his eyes are light brown. his attire is simple yet dignified", "blurry, ugly, poorly drawn, deformed", 1024, 2048, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["Envision an ostrich in the dessert. she has a green scarf wrapping her body. her eyes are dark black. her attire, simple yet dignified", "blurry, ugly, poorly drawn, deformed", 2048, 1024, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["Envision a portrait of a cute cat, her face is framed by a blue headscarf with muted tones of rust and cream. Her eyes are blue like faded denim. Her attire, simple yet dignified", "blurry, ugly, poorly drawn, deformed", 1080, 1920, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["Envision a realistic portrait of a black woman, she has a white headscarf. Her eyes are dark black. her attire, simple yet delightful.", "blurry, ugly, poorly drawn, deformed", 1920, 1080, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["A Cute Puppy with wings, Cartoon Drawings, high details", "blurry, ugly, poorly drawn, deformed", 2048, 1536, 10, 0.3, 1500, None, None, None, None, None, 0],
-        ["Darth Vader playing with raccoon in Mars during sunset.", "blurry, ugly, poorly drawn, deformed", 1536, 2048, 10, 0.3, 1500, None, None, None, None, None, 0],
-        ["A dramatic photo of a volcanic eruption, high details, sharp.", "blurry, ugly, poorly drawn, deformed", 768, 2048, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["A photo of the dolomites, highly detailed, sharp", "blurry, ugly, poorly drawn, deformed", 2048, 768, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["A professional photo of a rabbit riding a bike on a street in New York", "blurry, ugly, poorly drawn, deformed", 768, 768, 0, 0.3, 0, None, None, None, None, None, 0],
-        ["An illustration of an astronaut riding a horse", "blurry, ugly, poorly drawn, deformed", 512, 512, 0, 0.3, 0, None, None, None, None, None, 0],
-        ["A front view of a beautiful waterfall", "blurry, ugly, poorly drawn, deformed", 2048, 512, 7, 0.3, 1000, None, None, None, None, None, 0],
-        ["A realistic bird-eye view of a lake with palm tree on the side, simply, high details.", "blurry, ugly, poorly drawn, deformed", 512, 2048, 7, 0.3, 1000, None, None, None, None, None, 0]],
+        ["A realistic portrait of a young black woman. she has a Christmas red hat and a red scarf. Her eyes are light brown like they're almost caramel color. Her attire, simple yet dignified.", "blurry, ugly, poorly drawn, deformed", 2048, 2048, 10, 0.3, 2000, None, None, None, None, None, 0, None, None],
+        ["Envision a portrait of a horse, framed by a blue headscarf with muted tones of rust and cream. she has brown-colored eyes. Her attire, simple yet dignified", "blurry, ugly, poorly drawn, deformed", 1536, 1536, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["Envision a portrait of a cute corgi, framed by a red headscarf. his eyes are light brown. his attire is simple yet dignified", "blurry, ugly, poorly drawn, deformed", 1024, 2048, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["Envision an ostrich in the dessert. she has a green scarf wrapping her body. her eyes are dark black. her attire, simple yet dignified", "blurry, ugly, poorly drawn, deformed", 2048, 1024, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["Envision a portrait of a cute cat, her face is framed by a blue headscarf with muted tones of rust and cream. Her eyes are blue like faded denim. Her attire, simple yet dignified", "blurry, ugly, poorly drawn, deformed", 1080, 1920, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["Envision a realistic portrait of a black woman, she has a white headscarf. Her eyes are dark black. her attire, simple yet delightful.", "blurry, ugly, poorly drawn, deformed", 1920, 1080, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["A Cute Puppy with wings, Cartoon Drawings, high details", "blurry, ugly, poorly drawn, deformed", 2048, 1536, 10, 0.3, 1500, None, None, None, None, None, 0, None, None],
+        ["Darth Vader playing with raccoon in Mars during sunset.", "blurry, ugly, poorly drawn, deformed", 1536, 2048, 10, 0.3, 1500, None, None, None, None, None, 0, None, None],
+        ["A dramatic photo of a volcanic eruption, high details, sharp.", "blurry, ugly, poorly drawn, deformed", 768, 2048, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["A photo of the dolomites, highly detailed, sharp", "blurry, ugly, poorly drawn, deformed", 2048, 768, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["A professional photo of a rabbit riding a bike on a street in New York", "blurry, ugly, poorly drawn, deformed", 768, 768, 0, 0.3, 0, None, None, None, None, None, 0, None, None],
+        ["An illustration of an astronaut riding a horse", "blurry, ugly, poorly drawn, deformed", 512, 512, 0, 0.3, 0, None, None, None, None, None, 0, None, None],
+        ["A front view of a beautiful waterfall", "blurry, ugly, poorly drawn, deformed", 2048, 512, 7, 0.3, 1000, None, None, None, None, None, 0, None, None],
+        ["A realistic bird-eye view of a lake with palm tree on the side, simply, high details.", "blurry, ugly, poorly drawn, deformed", 512, 2048, 7, 0.3, 1000, None, None, None, None, None, 0, None, None]],
               
     allow_flagging=False,
 ).launch(server_port=args.port)

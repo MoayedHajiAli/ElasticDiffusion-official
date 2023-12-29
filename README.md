@@ -33,7 +33,7 @@ You may try Text2Image generation using Stable Diffusion XL as the base model at
 <br>
 
 # Gradio Demo
-We provide a gradio UI for our method. To access the demo, run the following command after seting up ElasticDiffusion dependencies:
+We provide a gradio UI for our method. To access the demo, run the following command after setting up ElasticDiffusion dependencies:
 ```
 python app_gradio.py
 ```
@@ -50,7 +50,7 @@ You can import ElasticDiffusion and run it directly through the following comman
 ```
 from elastic_diffusion import ElasticDiffusio
 pipe = ElasticDiffusion(device=torch.device('cuda'), sd_version='XL1.0',
-                       view_batch_size=16, torch_dtype=torch.float32) 
+                       view_batch_size=16, low_vram=False) 
 
 prompt = "An astronaut riding a corgi on the moon"
 negative_prompt = "blurry, ugly, poorly drawn, deformed"
@@ -63,23 +63,28 @@ images, verbose_info = pipe.generate_image(prompts=prompt,
                         resampling_steps=7,
                         drop_p=0.7,
                         rrg_init_weight=1000,
-                        cosine_scale=10)
+                        cosine_scale=10,
+                        tiled_decoder=False)
 ```
 - Supported stable diffusion versions (`sd_version`) are ['1.4', '1.5', '2.0', '2.1', 'XL1.0'], you may also pass a custom HuggingFace model key.
 - Best results are achieved with Stable Diffusion XL (`XL1.0`).
-- For lower memeory constrains, use a lower `view_batch_size` and `torch_dtype=torch.float16`.
+- For lower memory constraints, use a lower `view_batch_size` and enable `low_vram`. You may enable `tiled_decoder` as well when generating images at higher resolutions (e.g 2048 x 2048)
 - The current implementation is restricted to 2X the training resolution of the base diffusion model.
-- Our method is sensitive to the hyper-parameters and different resolutions requires different hyper-parameters for best results. Please see our hyper-paramer selection guide below.
+- Our method is sensitive to the hyper-parameters and different resolutions require different hyper-parameters for best results. Please see our hyper-paramer selection guide below.
 
 ## Hyper-parameters
 - `resampling_steps`:
-  Controls the number of resampling steps to increase the global content resolution. Typically, a higher value results in sharper images but would increase the inference time substraintally. 
+  Controls the number of resampling steps to increase the global content resolution. Typically, a higher value results in sharper images but would increase the inference time substantially. 
 - `new_p`:
   Controls the percentage of pixels sampled at every resampling step. A lower value increases the resolution of the global content at a higher rate but might result in artifacts. We recommend setting `new_p` to 0.3.
 - `rrg_init_weight`:
-  The inital scale of the reduced-resolution guidance. A higher value helps eliminating emergying artifacts but results in blurier images. 
+  The initial scale of the reduced-resolution guidance. A higher value helps eliminate emerging artifacts but results in blurier images. We recommend using an RRG scale between 2000 and 4000.
 - `cosine_scale`:
-  Specifies the decreasing rate of the reduced-resolution guidance scale. A higher values leads to more rapid decrease. The combination of this hyper-parameter and `rrg_init_weight` are used to control the harpness-artifacts tradeoff.
+  Specifies the decreasing rate of the reduced-resolution guidance scale. A higher value leads to a more rapid decrease. The combination of this hyper-parameter and `rrg_init_weight` is used to control the sharpness-artifacts tradeoff.
+- `low_vram`: 
+  if enabled, the model will operate at half-precision and load only one component to the GPUs at a time to enable the generation at a lower GPU memory requirement. 
+- `tiled_decoder`: 
+  if enabled, the VAE will decoder the final latent in patches. This is important when generating a higher resolution image (e.g. 2048 x 2048) in environments with memory constations. Please note that this makes the decoding processes slower.
 
 
 ## Citation
