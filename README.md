@@ -6,7 +6,7 @@
 
 <img src="imgs/teaser.jpg" width="1000"/>
 
-### ElasticDiffusion: Training-free Arbitrary Size Image Generation (arXiv 2023)
+### ElasticDiffusion: Training-free Arbitrary Size Image Generation (CVPR 2024)
 <div align="justify">
 <b>Abstract</b>: Diffusion models have revolutionized image generation in recent years, yet they are still limited to a few sizes and aspect ratios. We propose ElasticDiffusion, a novel training-free decoding method that enables pretrained text-to-image diffusion models to generate images with various sizes. ElasticDiffusion attempts to decouple the generation trajectory of a pretrained model into local and global signals. The local signal controls low-level pixel information and can be estimated on local patches, while the global signal is used to maintain overall structural consistency and is estimated with a reference image. We test our method on CelebA-HQ (faces) and LAION-COCO (objects/indoor/outdoor scenes). Our experiments and qualitative results show superior image coherence quality across aspect ratios compared to MultiDiffusion and the standard decoding strategy of Stable Diffusion. For more details, please visit our <a href='https://elasticdiffusion.github.io/'>project webpage</a> or read our 
 <a href='https://arxiv.org/abs/2311.18822'>paper</a>.
