@@ -1,4 +1,4 @@
-# ElasticDiffusion: Training-free Arbitrary Size Image Generation
+# ElasticDiffusion: Training-free Arbitrary Size Image Generation through Global-Local Content Separation
 [![Project Page](https://img.shields.io/badge/Project-Page-green.svg)](https://elasticdiffusion.github.io/)
 [![arXiv](https://img.shields.io/badge/arXiv-2311.18822-b31b1b)](https://arxiv.org/abs/2311.18822)
 [![Replicate](https://img.shields.io/badge/Demo-%F0%9F%9A%80%20Replicate-blue)](https://replicate.com/moayedhajiali/elasticdiffusion)
@@ -6,7 +6,7 @@
 
 <img src="imgs/teaser.jpg" width="1000"/>
 
-### ElasticDiffusion: Training-free Arbitrary Size Image Generation (CVPR 2024)
+### ElasticDiffusion: Training-free Arbitrary Size Image Generation through Global-Local Content Separation (CVPR 2024)
 <div align="justify">
 <b>Abstract</b>: Diffusion models have revolutionized image generation in recent years, yet they are still limited to a few sizes and aspect ratios. We propose ElasticDiffusion, a novel training-free decoding method that enables pretrained text-to-image diffusion models to generate images with various sizes. ElasticDiffusion attempts to decouple the generation trajectory of a pretrained model into local and global signals. The local signal controls low-level pixel information and can be estimated on local patches, while the global signal is used to maintain overall structural consistency and is estimated with a reference image. We test our method on CelebA-HQ (faces) and LAION-COCO (objects/indoor/outdoor scenes). Our experiments and qualitative results show superior image coherence quality across aspect ratios compared to MultiDiffusion and the standard decoding strategy of Stable Diffusion. For more details, please visit our <a href='https://elasticdiffusion.github.io/'>project webpage</a> or read our 
 <a href='https://arxiv.org/abs/2311.18822'>paper</a>.
@@ -78,7 +78,7 @@ images, verbose_info = pipe.generate_image(prompts=prompt,
 - `new_p`:
   Controls the percentage of pixels sampled at every resampling step. A lower value increases the resolution of the global content at a higher rate but might result in artifacts. We recommend setting `new_p` to 0.3.
 - `rrg_init_weight`:
-  The initial scale of the reduced-resolution guidance. A higher value helps eliminate emerging artifacts but results in blurier images. We recommend using an RRG scale between 2000 and 4000.
+ The initial scale of the reduced-resolution guidance. A higher value helps eliminate emerging artifacts but results in blurry images. We recommend using an RRG scale between 2000 and 4000. Increasing the weight too much results in more occurrence of background bleedthrough.
 - `cosine_scale`:
   Specifies the decreasing rate of the reduced-resolution guidance scale. A higher value leads to a more rapid decrease. The combination of this hyper-parameter and `rrg_init_weight` is used to control the sharpness-artifacts tradeoff.
 - `patch_size`: 
@@ -86,9 +86,9 @@ images, verbose_info = pipe.generate_image(prompts=prompt,
 - `low_vram`: 
   if enabled, the model will operate at half-precision and load only one component to the GPUs at a time to enable the generation at a lower GPU memory requirement. 
 - `tiled_decoder`: 
-  if enabled, the VAE will decoder the final latent in patches. This is important when generating a higher resolution image (e.g. 2048 x 2048) in environments with memory constations. Please note that this makes the decoding processes slower.
+  if enabled, the VAE will decoder the final latent in patches. This is important when generating a higher resolution image (e.g. 2048 x 2048) in environments with memory constations. Please note that this makes the decoding processes slower. Additionally, some samples appear to have checkerboard pattern and discontinuity at the boundaries. 
 
-
+For best results, we recommend using different hyperparameters for different target resolutions. You may use the hyperparameters that we included in the demo as a reference.
 ## Citation
 If you find this paper useful in your research, please consider citing:
 ```
