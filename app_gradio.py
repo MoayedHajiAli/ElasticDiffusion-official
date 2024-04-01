@@ -63,7 +63,6 @@ parser.add_argument('--port', type=int, default=7860, help='Port to run the Grad
 args = parser.parse_args()
 
 description = """
-<h2 style="color: greem;">ElasticDiffusion: Training-free Arbitrary Size Image Generation</h2>
  """
 article = ""
 gr.Interface(
@@ -102,7 +101,7 @@ gr.Interface(
 
     ],
     outputs=gr.Gallery(columns=2, preview=True, allow_preview=True),
-    title="ElasticDiffusion: Training-Free Arbitrary Size Image Generation",
+    title="ElasticDiffusion: Training-free Arbitrary Size Image Generation through Global-Local Content Separation",
     description=description,
     article=article,
     examples=[
