@@ -13,6 +13,11 @@
 </div> 
 <br>
 
+# News
+- **2024.03.31**: Demo released for integrating ElasticDiffusion with ControlNet for Img2Img generation!
+- **2024.03.31**: Code released for PCA visalization of the diffusion scores.
+- **2024.03.31**: An improved version of the paper is available on [Arxiv](https://arxiv.org/abs/2311.18822)!
+- **2024.02.27**: ElasticDiffusion was accepted to CVPR 2024!
 # Setup
 Initialize a [conda](https://docs.conda.io/en/latest) environment named elasticdiffusion by running:
 ```
@@ -71,6 +76,26 @@ images, verbose_info = pipe.generate_image(prompts=prompt,
 - For lower memory constraints, use a lower `view_batch_size` and enable `low_vram`. You may enable `tiled_decoder` as well when generating images at higher resolutions (e.g 2048 x 2048)
 - The current implementation is restricted to 2X the training resolution of the base diffusion model.
 - Our method is sensitive to the hyper-parameters and different resolutions require different hyper-parameters for best results. Please see our hyper-paramer selection guide below.
+
+# Text2Image 
+For completeness, we have integrated ControlNet with ElasticDiffusion to provide Img2Img generation. However, we notice a huge decrease in the image quality and level of details. 
+
+To generate an image conditioned on depth or canny, you may directly call `elastic_diffusion_w_contolnet.py` similar to the following example:
+```
+python elastic_diffusion_w_controlnet.py --prompt "Envision a dramatic picture of the joker, masterpiece" --condition_image "imgs/input/yoga.jpeg"
+```
+
+You may also access our Gradio demo for Img2Img by running:
+```
+python app_gradio_img2img.py
+```
+
+<figure>
+   <img src="imgs/gradio_img2img.png" width="800"/>
+   <figcaption><center>Screenshot from ElasticDiffusion Img2Img Gradio Demo </center></figcaption>
+</figure>
+<br>
+
 
 ## Hyper-parameters
 - `resampling_steps`:
