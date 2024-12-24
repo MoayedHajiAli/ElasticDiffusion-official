@@ -117,11 +117,11 @@ For best results, we recommend using different hyperparameters for different tar
 ## Citation
 If you find this paper useful in your research, please consider citing:
 ```
-@misc{hajiali2023elasticdiffusion,
-    title={ElasticDiffusion: Training-free Arbitrary Size Image Generation}, 
-    author={Moayed Haji-Ali and Guha Balakrishnan and Vicente Ordonez},
-    year={2023},
-    eprint={2311.18822},
-    archivePrefix={arXiv},
-    primaryClass={cs.CV}}
+@article{elasticdiffusion,
+  title={ElasticDiffusion: Training-Free Arbitrary Size Image Generation Through Global-Local Content Separation},
+  author={Moayed Haji Ali and Guha Balakrishnan and Vicente Ordonez},
+  journal={2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2023},
+  pages={6603-6612},
+  url={https://api.semanticscholar.org/CorpusID:265506420}}
 ```
